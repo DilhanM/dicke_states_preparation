@@ -3,13 +3,18 @@ import matplotlib.pyplot as plt
 import scipy
 
 # main classes and functions
-from qiskit import QuantumRegister, QuantumCircuit, Aer, execute
+from qiskit import QuantumRegister, QuantumCircuit
+
+from qiskit_aer import AerSimulator
 
 # gates
 from qiskit.circuit.library import RYGate
 
 # visualization stuff
 from qiskit.visualization import plot_histogram
+
+# quantum info
+from qiskit.quantum_info import Statevector
 
 ##################################################################
 ##################################################################
@@ -41,15 +46,20 @@ def test_circuit_qasm(qc, figsize=(12, 4)):
     the quantum circuit to be simulates (qc) must 
     have no measurements or classical registers.
     '''
-
-    # meausring
-    qc.measure_all()
+    # Create a copy of the circuit to avoid modifying the original
+    qc_copy = qc.copy()
+    
+    # Decompose all custom gates to basic gates
+    qc_copy = qc_copy.decompose().decompose().decompose().decompose()
+    
+    # measuring
+    qc_copy.measure_all()
 
     #################################
 
-    backend = Aer.get_backend("qasm_simulator")
+    backend = AerSimulator()
 
-    job = execute(qc, backend, shots=1e5, seed_simulator=42)
+    job = backend.run(qc_copy, shots=int(1e5), seed_simulator=42)
     results = job.result()
     counts = results.get_counts()
     
@@ -66,22 +76,70 @@ def test_circuit_sv(qc, print_stuff=False, figsize=(12, 4)):
     
     optionally, prints the statevector components as well as the probabilities.
     '''
-
-    backend = Aer.get_backend("statevector_simulator")
-
-    job = execute(qc, backend, seed_simulator=42)
+    # Create a copy and decompose for simulation
+    qc_copy = qc.copy()
+    qc_copy = qc_copy.decompose().decompose().decompose().decompose()
+    
+    # Method 1: Using AerSimulator for backward compatibility
+    simulator = AerSimulator(method='statevector')
+    qc_copy.save_statevector()
+    
+    job = simulator.run(qc_copy, seed_simulator=42)
     results = job.result()
-    counts = results.get_counts()
+    
+    statevector_array = results.data(0)['statevector']
+    probabilities = np.abs(statevector_array)**2
+    
+    # Method 2: Using qiskit.quantum_info.Statevector (cleaner approach)
+    qc_statevector = qc.copy()
+    qc_statevector = qc_statevector.decompose().decompose().decompose().decompose()
+    
+    # Get statevector using quantum_info
+    statevector_obj = Statevector.from_instruction(qc_statevector)
+    
+    print("="*60)
+    print("STATEVECTOR REPRESENTATION:")
+    print("="*60)
+    
+    # Print the statevector in different formats
+    print("\n1. Raw statevector (using quantum_info.Statevector):")
+    print(statevector_obj)
+    
+    print("\n2. Statevector data (complex amplitudes):")
+    print(f"Shape: {statevector_obj.data.shape}")
+    for i, amp in enumerate(statevector_obj.data):
+        if abs(amp) > 1e-10:  # Only show non-zero amplitudes
+            binary = format(i, f'0{qc.num_qubits}b')
+            print(f"|{binary}⟩: {amp:.6f}")
+    
+    print("\n3. Probabilities:")
+    probs = statevector_obj.probabilities()
+    for i, prob in enumerate(probs):
+        if prob > 1e-10:  # Only show non-zero probabilities
+            binary = format(i, f'0{qc.num_qubits}b')
+            print(f"|{binary}⟩: {prob:.6f}")
+    
+    print("\n4. Counts dictionary (for histogram):")
+    counts_dict = statevector_obj.probabilities_dict()
+    # Filter and format for display
+    filtered_counts = {k: v for k, v in counts_dict.items() if v > 1e-10}
+    print(filtered_counts)
+    
+    # Create counts dictionary for histogram
+    n_qubits = qc.num_qubits
+    counts = {}
+    for i, prob in enumerate(probabilities):
+        if prob > 1e-10:  # Only include non-negligible probabilities
+            bitstring = format(i, f'0{n_qubits}b')
+            counts[bitstring] = int(prob * 100000)  # Scale for visualization
     
     if print_stuff:
-        
-        sv = results.data(0)['statevector']
-        probs = sv**2
-
-        print(f"Statevector:\t{sv}\n")
-        print(f"Probabilities:\t{probs}")
+        print(f"\n5. Legacy format:")
+        print(f"Statevector array:\t{statevector_array}\n")
+        print(f"Probabilities array:\t{probabilities}")
 
     print(f"\nNumber of elements in result superposition: {len(counts)}\n")
+    print("="*60)
     
     return plot_histogram(counts, title="Results", figsize=figsize)
 
@@ -95,7 +153,7 @@ def gate_i(n, draw=False):
     '''
     returns the 2-qubit gate (i), introduced in Sec. 2.2
     
-    this gate is simply a cR_y between 2 CNOTs, with
+    this gate is simply a cR_y between 2 cxs, with
     rotation angle given by 2*np.arccos(np.sqrt(1/n))
     
     args: 
@@ -105,19 +163,19 @@ def gate_i(n, draw=False):
     
     qc_i = QuantumCircuit(2)
 
-    qc_i.cnot(0, 1)
+    qc_i.cx(0, 1)
 
     theta = 2*np.arccos(np.sqrt(1/n))
     cry = RYGate(theta).control(ctrl_state="1")
     qc_i.append(cry, [1, 0])
 
-    qc_i.cnot(0, 1)
+    qc_i.cx(0, 1)
 
     ####################################
 
     gate_i = qc_i.to_gate()
 
-    gate_i.name = "$(i)$"
+    gate_i.name = "gate_i"
 
     ####################################
 
@@ -132,7 +190,7 @@ def gate_ii_l(l, n, draw=False):
     '''
     returns the 2-qubit gate (ii)_l, introduced in Sec. 2.2
     
-    this gate is simply a ccR_y between 2 CNOTs, with
+    this gate is simply a ccR_y between 2 cxs, with
     rotation angle given by 2*np.arccos(np.sqrt(l/n))
     
     args: 
@@ -143,19 +201,19 @@ def gate_ii_l(l, n, draw=False):
 
     qc_ii = QuantumCircuit(3)
 
-    qc_ii.cnot(0, 2)
+    qc_ii.cx(0, 2)
 
     theta = 2*np.arccos(np.sqrt(l/n))
     ccry = RYGate(theta).control(num_ctrl_qubits = 2, ctrl_state="11")
     qc_ii.append(ccry, [2, 1, 0])
 
-    qc_ii.cnot(0, 2)
+    qc_ii.cx(0, 2)
 
     ####################################
 
     gate_ii = qc_ii.to_gate()
 
-    gate_ii.name = f"$(ii)_{l}$"
+    gate_ii.name = f"gate_ii_{l}"
 
     ####################################
 
@@ -189,7 +247,7 @@ def gate_scs_nk(n, k, draw=False):
 
     gate_scs = qc_scs.to_gate()
 
-    gate_scs.name = "SCS$_{" + f"{n},{k}" + "}$"
+    gate_scs.name = f"SCS_{n}_{k}"
 
     ####################################
 
@@ -229,7 +287,7 @@ def first_block(n, k, l, draw=False):
         idxs_scs = idxs_scs[n_first:]
         
         # applying identity to first qubits
-        qc_first_block.i(qr[:n_first])
+        qc_first_block.id(qr[:n_first])
 
     if n_last !=0:
         
@@ -239,7 +297,7 @@ def first_block(n, k, l, draw=False):
         qc_first_block.append(gate_scs_nk(l, k), idxs_scs)
     
         # applying identity to last qubits
-        qc_first_block.i(qr[-n_last:])
+        qc_first_block.id(qr[-n_last:])
     
     else:
         
@@ -247,7 +305,7 @@ def first_block(n, k, l, draw=False):
         qc_first_block.append(gate_scs_nk(l, k), idxs_scs)
         
     # string with the operator, to be used as gate label
-    str_operator = "$1^{\otimes " + f'{n_first}' + "} \otimes$ SCS$_{" + f"{l},{k}" + "} \otimes 1^{\otimes " + f"{n_last}" + "}$"
+    str_operator = f"first_block_{n}_{k}_{l}"
     
     ####################################
 
@@ -290,14 +348,14 @@ def second_block(n, k, l, draw=False):
         # appending SCS_{n, k} to appropriate indices
         qc_second_block.append(gate_scs_nk(l, l-1), idxs_scs)
     
-        qc_second_block.i(qr[-n_last:])
+        qc_second_block.id(qr[-n_last:])
     
     else:
         
         # appending SCS_{n, k} to appropriate indices
         qc_second_block.append(gate_scs_nk(l, l-1), idxs_scs)
         
-    str_operator = "SCS$_{" + f"{l},{l-1}" + "} \otimes 1^{\otimes " + f"{n_last}" + "}$"
+    str_operator = f"second_block_{n}_{k}_{l}"
     
     ####################################
 
